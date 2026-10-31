@@ -76,6 +76,34 @@ describe("Chime backend", () => {
     await harness.lifecycle.dispose();
   });
 
+  it("stays silent when a turn ends with a background command still running, and chimes when it returns", async () => {
+    const thread = makeThreadResponse({ id: "thread-1", projectId: "project-1" });
+    let backgroundCommands = 1;
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "chime",
+      sdk: {
+        subscribe: () => () => {},
+        threads: {
+          events: { list: async () => [] },
+          interactions: { list: async () => [] },
+          get: async () => thread,
+          list: (async () => [{ id: "thread-1", activity: { activeBackgroundCommandCount: backgroundCommands } }]) as never,
+        },
+      },
+    });
+    await plugin(bb);
+
+    await harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    let payload = await (await harness.behavior.fetchHttp("GET", "/events?after=0")).json() as { events: unknown[] };
+    expect(payload.events).toEqual([]);
+
+    backgroundCommands = 0;
+    await harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    payload = await (await harness.behavior.fetchHttp("GET", "/events?after=0")).json() as { events: unknown[] };
+    expect(payload.events).toEqual([expect.objectContaining({ notification: expect.objectContaining({ kind: "completed" }) })]);
+    await harness.lifecycle.dispose();
+  });
+
   it("honours muted projects before queueing", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "chime",

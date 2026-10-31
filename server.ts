@@ -118,10 +118,28 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.events.on("thread.active", ({ thread }) => publishChimeNotification("started", thread));
+  // A turn that ends with a background command still running (a CI watch, a long build) is not
+  // the agent's result yet: it wakes again when the command finishes, and that idle chimes.
+  async function backgroundCommandRunning(thread: { id: string; projectId: string }): Promise<boolean> {
+    try {
+      const listed = await bb.sdk.threads.list({ projectId: thread.projectId, threadIds: [thread.id] } as never) as unknown as Array<{
+        id: string;
+        activity?: { activeBackgroundCommandCount?: number } | null;
+      }>;
+      const self = listed.find((entry) => entry.id === thread.id);
+      return (self?.activity?.activeBackgroundCommandCount ?? 0) > 0;
+    } catch (error) {
+      bb.log.warn(`background command check failed; chiming: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
   bb.events.on("thread.idle", async ({ thread }) => {
     try {
       const events = await bb.sdk.threads.events.list({ threadId: thread.id, limit: "30" });
-      await publishChimeNotification(classifyIdleEvent(events), thread);
+      const kind = classifyIdleEvent(events);
+      if (kind === "completed" && await backgroundCommandRunning(thread)) return;
+      await publishChimeNotification(kind, thread);
     } catch (error) {
       bb.log.warn(`cancellation detection failed; using completion: ${error instanceof Error ? error.message : String(error)}`);
       await publishChimeNotification("completed", thread);
